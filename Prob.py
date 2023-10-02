@@ -4,8 +4,10 @@ import matplotlib.pyplot as plt
 
 nb_harmonics = 32
 
+
 def normalize(data):
-    return(np.divide(data, np.amax(data)))
+    return np.divide(data, np.amax(data))
+
 
 def extract_audio(file: str):
     sampling_rate, data = scipy.io.wavfile.read(file)
@@ -30,7 +32,7 @@ def create_figure(x_arr, y_arr, title, x_label, y_label, x_lim1, x_lim2):
     plt.title(title)
     plt.xlabel(x_label)
     plt.ylabel(y_label)
-    plt.show()
+    # plt.show()
 
 
 def find_fundamental_frequency(amplitude_arr, fe, freq_min=261.6, freq_max=493.9):
@@ -85,7 +87,7 @@ def create_rif_filter(fe):
     H_shift = np.fft.fftshift(H)
     create_figure(m, (20 * np.log10(np.abs(H_shift))),
                   'Reponse impulsionnelle', 'Frequence', 'Amplitude (DB)', -4, 4)
-    return h
+    return normalize(h)
 
 
 def create_temporal_envelope(x, h):
@@ -97,7 +99,7 @@ def create_temporal_envelope(x, h):
     return y_normalized
 
 
-def signal_to_wav(harmonics_list, fundamental_freq, sampleRate, envelope, duration, name):
+def signal_to_audio(harmonics_list, fundamental_freq, sampleRate, envelope, duration):
     t = np.linspace(0, duration, int(sampleRate * duration), endpoint=False)
     audio = np.zeros(int(sampleRate * duration))
 
@@ -106,7 +108,12 @@ def signal_to_wav(harmonics_list, fundamental_freq, sampleRate, envelope, durati
 
     audio = np.multiply(audio, envelope[:len(audio)])
     audio = normalize(audio)
-    scipy.io.wavfile.write(name + '.wav', sampleRate, np.array(audio))
+
+    return audio
+
+
+def write_wav_file(filename, audio, sampleRate):
+    scipy.io.wavfile.write(filename + '.wav', sampleRate, np.array(audio))
 
 
 def extract_signal_la():
@@ -124,7 +131,10 @@ def extract_signal_la():
     low_filter = create_rif_filter(Fe)
     envelope = create_temporal_envelope(audio_data, low_filter)
 
-    signal_to_wav(harmonics, harmonics[0][1], Fe, envelope, 2, "LA#test")
+    audio = signal_to_audio(harmonics, harmonics[0][1], Fe, envelope, 2)
+    write_wav_file("LA#test", audio, Fe)
+
+    generate_betho(harmonics, Fe, envelope, harmonics[0][1])
 
 
 def create_bandstop_filter(fe):
@@ -146,7 +156,7 @@ def create_bandstop_filter(fe):
                   'Reponse impulsionnelle du filtre coupe-bande', 'Frequence', 'Amplitude (DB)',
                   -int(N_order / 2) - 500, int(N_order / 2) + 500)
 
-    return h_basson
+    return normalize(h_basson)
 
 
 def extracts_parameters(audio_data, fe):
@@ -169,8 +179,9 @@ def extract_signal_basson():
     create_figure(freqz, db_fft, 'Amplitude Bruité', 'Freqs (Hz)', 'Amplitude (DB)', 0, 1200)
 
     h_basson = create_bandstop_filter(Fe)
-    y = np.convolve(h_basson, audio_data)
-    y = np.convolve(h_basson, y)
+    y = np.convolve(audio_data, h_basson)
+    y = y * np.hamming(len(y))
+    y = np.divide(y, np.amax(y))
 
     amplitude, phase, db_fft, freqz = extracts_parameters(y, Fe)
     create_figure(freqz, phase, 'Phase Filtré', 'Freqs (Hz)', 'Phase (rad/éch)', 0, 1200)
@@ -183,7 +194,8 @@ def extract_signal_basson():
     low_filter = create_rif_filter(Fe)
     envelope = create_temporal_envelope(y, low_filter)
 
-    signal_to_wav(harmonics, harmonics[0][1], Fe, envelope, 2, 'Basson')
+    audio = signal_to_audio(harmonics, harmonics[0][1], Fe, envelope, 2)
+    write_wav_file("Basson", audio, Fe)
 
 
 def convert_frequencies(note, lad_freq):
@@ -214,6 +226,24 @@ def convert_frequencies(note, lad_freq):
             return lad_freq
         case "si":
             return la_freq * 1.123
+
+def silence(fe, duration = 2.0):
+    return np.zeros(int(duration * fe))
+
+
+def generate_betho(harmonics, fe, envelope, fundamental):
+    f_sol = convert_frequencies('sol', fundamental)
+    f_mib = convert_frequencies('re#', fundamental)
+    f_fa = convert_frequencies('fa', fundamental)
+    f_re = convert_frequencies('re', fundamental)
+
+    sol = signal_to_audio(harmonics, f_sol, fe, envelope, 0.4)
+    mib = signal_to_audio(harmonics, f_mib, fe, envelope, 1.5)
+    fa = signal_to_audio(harmonics, f_fa, fe, envelope, 0.4)
+    re = signal_to_audio(harmonics, f_re, fe, envelope, 1.5)
+
+    audio = np.concatenate((sol, sol, sol, mib, silence(fe, 1.5), fa, fa, fa, re))
+    write_wav_file('Beethoven', audio, fe)
 
 
 if __name__ == '__main__':

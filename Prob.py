@@ -9,6 +9,10 @@ def normalize(data):
     return np.divide(data, np.amax(data))
 
 
+def to_db(data):
+    return 20 * np.log10(np.abs(data))
+
+
 def extract_audio(file: str):
     sampling_rate, data = scipy.io.wavfile.read(file)
 
@@ -22,7 +26,7 @@ def fast_fourier_transform(data):
 
 def fast_fourier_transform_with_window(data):
     data_hann = data * np.hanning(len(data))
-    fft = np.fft.fft(data_hann)
+    fft = fast_fourier_transform(data_hann)
     return fft
 
 
@@ -32,7 +36,17 @@ def create_figure(x_arr, y_arr, title, x_label, y_label, x_lim1, x_lim2):
     plt.title(title)
     plt.xlabel(x_label)
     plt.ylabel(y_label)
-    # plt.show()
+    plt.show()
+
+
+def create_figure_harm(x_arr, y_arr, title, x_label, y_label, y_lim1, y_lim2):
+    plt.stem(x_arr, y_arr)
+    plt.xlim(0, 16000)
+    plt.ylim(y_lim1, y_lim2)
+    plt.title(title)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.show()
 
 
 def find_fundamental_frequency(amplitude_arr, fe, freq_min=261.6, freq_max=493.9):
@@ -44,22 +58,30 @@ def find_fundamental_frequency(amplitude_arr, fe, freq_min=261.6, freq_max=493.9
     return ff
 
 
+def plot_synth_singal(audio, Fe, name, end=0):
+    amplitude, phase, db_fft, freqz = extracts_parameters(audio, Fe)
+    if end == 0:
+        end = np.amax(freqz)
+    create_figure(freqz, db_fft, 'Amplitude ' + name + ' synth', 'Freqs (Hz)', 'Amplitude (DB)', 0, end)
+
+    create_temporal_envelope(audio, create_rif_filter(Fe), name + ' synth')
+
+
 def return_harmonics(amplitude_arr, phase_arr, nb_harmonics, ff, fe):
-    harmonics_arr = []
-    for i in range(1, nb_harmonics + 1):
-        fh = ff * i  # Fréquence de l'harmonique (en Hz)
-        index_fh = int(fh * len(amplitude_arr) / fe)  # m
-        amplitude_harmonic = amplitude_arr[index_fh]  # Amplitude de l'harmonique
-        phase_harmonic = phase_arr[index_fh]  # Phase des harmonique
-        harmonics_arr.append((i, fh, amplitude_harmonic, phase_harmonic))
+    amplitude_harmonic, phase_harmonic, freq_harmonic, = [], [], []
+    for i in range(0, nb_harmonics + 1):
+        freq_harmonic.append(ff * i) #Fréquence de l'harmonique (en Hz)
+        index_fh = int(freq_harmonic[i] * len(amplitude_arr) / fe)  # m
+        amplitude_harmonic.append(amplitude_arr[index_fh])  # Amplitude de l'harmonique
+        phase_harmonic.append(phase_arr[index_fh])  # Phase des harmonique
 
-    return harmonics_arr
+    return amplitude_harmonic, phase_harmonic, freq_harmonic
 
 
-def print_harmonics(harmonics):
+def print_harmonics(amplitude, phase, frequency):
     # Afficher les 32 premières harmoniques
-    for i, (index, frequency, amplitude, phase) in enumerate(harmonics, 1):
-        print(f"Harmonique {i}: Indice = {index}, Fréquence = {frequency} Hz, Amplitude = {amplitude}, Phase = {phase}")
+    for i in range(0, len(amplitude)):
+        print(f"Harmonique {i}: Indice = {i}, Fréquence = {frequency[i]} Hz, Amplitude = {amplitude[i]}, Phase = {phase[i]}")
 
 
 def find_order_of_signal():
@@ -71,8 +93,9 @@ def find_order_of_signal():
             return K  # ordre du filtre
 
 
-def create_rif_filter(fe):
+def create_rif_filter(fe, show=False):
     N_order = find_order_of_signal()
+
     w = np.pi / 1000
     fc = (w * fe) / (2 * np.pi)
     K = ((2 * fc * N_order) / fe) + 1
@@ -83,30 +106,34 @@ def create_rif_filter(fe):
     h = (1 / N_order) * np.sin(np.pi * K * n / N_order) / (np.sin(np.pi * n / N_order) + 1e-20)
     h[int(N_order / 2)] = K / N_order
 
-    H = np.fft.fft(h)
-    H_shift = np.fft.fftshift(H)
-    create_figure(m, (20 * np.log10(np.abs(H_shift))),
-                  'Reponse impulsionnelle', 'Frequence', 'Amplitude (DB)', -4, 4)
+    if show:
+        H = fast_fourier_transform(h)
+        H_shift = np.fft.fftshift(H)
+        create_figure(m, to_db(H_shift),
+                      'Reponse impulsionnelle filtre l-p', 'Frequence Normalisée', 'Amplitude (DB)', -4, 4)
     return normalize(h)
 
 
-def create_temporal_envelope(x, h):
+def create_temporal_envelope(x, h, name):
     y = np.convolve(np.abs(x), h)
     y_normalized = normalize(y)
 
     create_figure(np.arange(0, len(y)), y_normalized,
-                  'Enveloppe Temporelle', 'Echantillon', 'Amplitude', 0, int(len(x)))
+                  'Enveloppe Temporelle ' + name, 'Echantillon', 'Amplitude', 0, int(len(x)))
     return y_normalized
 
 
-def signal_to_audio(harmonics_list, fundamental_freq, sampleRate, envelope, duration):
-    t = np.linspace(0, duration, int(sampleRate * duration), endpoint=False)
-    audio = np.zeros(int(sampleRate * duration))
+def signal_to_audio(amplitude, phase, fundamental, sample_rate, envelope, duration):
+    # Init signal
+    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    audio = np.zeros(int(sample_rate * duration))
+    shorten_enveloppe = envelope[:len(audio)]
 
-    for i in range(len(harmonics_list)):
-        audio += harmonics_list[i][2] * np.sin(2 * np.pi * fundamental_freq * t * i + harmonics_list[i][1])
+    # Créer signal audio avec phase, amplitude et freq des harmoniques
+    for i in range(len(amplitude)):
+        audio += amplitude[i] * np.sin(2 * np.pi * fundamental * i * t + phase[i])
 
-    audio = np.multiply(audio, envelope[:len(audio)])
+    audio = np.multiply(audio, shorten_enveloppe)
     audio = normalize(audio)
 
     return audio
@@ -119,25 +146,29 @@ def write_wav_file(filename, audio, sampleRate):
 def extract_signal_la():
     Fe, audio_data = extract_audio('note_guitare_LAd.wav')
 
+    # Paramètres du signal
     amplitude, phase, db_fft, freqz = extracts_parameters(audio_data, Fe)
-
-    create_figure(freqz, phase, 'Phase LA#', 'Freqs (Hz)', 'Phase (rad/éch)', 0, np.amax(freqz))
     create_figure(freqz, db_fft, 'Amplitude LA#', 'Freqs (Hz)', 'Amplitude (DB)', 0, np.amax(freqz))
 
+    # Harmoniques
     fundamental_frequency = find_fundamental_frequency(amplitude, Fe)
-    harmonics = return_harmonics(amplitude, phase, nb_harmonics, fundamental_frequency, Fe)
-    print_harmonics(harmonics)
+    amplitude_ham, phase_ham, freq_ham = return_harmonics(amplitude, phase, nb_harmonics, fundamental_frequency, Fe)
+    print_harmonics(amplitude_ham, phase_ham, freq_ham)
 
-    low_filter = create_rif_filter(Fe)
-    envelope = create_temporal_envelope(audio_data, low_filter)
+    # Création de l'enveloppe
+    low_filter = create_rif_filter(Fe, True)
+    envelope = create_temporal_envelope(audio_data, low_filter, ' LA#')
 
-    audio = signal_to_audio(harmonics, harmonics[0][1], Fe, envelope, 2)
+    # Synth de la note LA#
+    audio = signal_to_audio(amplitude_ham, phase_ham, fundamental_frequency, Fe, envelope, 3.5)
     write_wav_file("LA#test", audio, Fe)
+    plot_synth_singal(audio, Fe, "LA#")
 
-    generate_betho(harmonics, Fe, envelope, harmonics[0][1])
+    generate_betho(amplitude_ham, phase_ham, Fe, envelope, fundamental_frequency)
 
 
 def create_bandstop_filter(fe):
+    # Variable nécessaires
     N_order = 6000
     n = np.arange(-int(N_order / 2), int(N_order / 2))
     fc1 = 40
@@ -145,16 +176,22 @@ def create_bandstop_filter(fe):
     fc0 = 1000
     w0 = (2 * np.pi * fc0) / fe
 
+    # Création du filtre l-p
     h_low_pass = (1 / N_order) * np.sin(np.pi * k1 * n / N_order) / (np.sin(np.pi * n / N_order) + 1e-20)
     h_low_pass[int(N_order / 2)] = k1 / N_order
 
+    # initialiser Diract
     diract = np.zeros(N_order)
     diract[int(N_order / 2)] = 1
 
+    # Création b-s
     h_basson = diract - np.multiply(2 * h_low_pass, np.cos(n * w0))
-    create_figure(n, np.abs(h_basson),
+
+    amplitude, phase, db_fft, freqz = extracts_parameters(h_basson, fe)
+
+    create_figure(freqz, db_fft,
                   'Reponse impulsionnelle du filtre coupe-bande', 'Frequence', 'Amplitude (DB)',
-                  -int(N_order / 2) - 500, int(N_order / 2) + 500)
+                  0, 5000)
 
     return normalize(h_basson)
 
@@ -162,10 +199,11 @@ def create_bandstop_filter(fe):
 def extracts_parameters(audio_data, fe):
     N = len(audio_data)
 
+    # Domaine frequentiel
     fft_result = fast_fourier_transform(audio_data)
     amplitude = np.abs(fft_result)
     phase = np.angle(fft_result)
-    db_fft = 20 * np.log10(amplitude)
+    db_fft = to_db(amplitude)
     freqz = np.fft.fftfreq(N, d=1 / fe)
 
     return amplitude, phase, db_fft, freqz
@@ -174,28 +212,46 @@ def extracts_parameters(audio_data, fe):
 def extract_signal_basson():
     Fe, audio_data = extract_audio('note_basson_plus_sinus_1000_Hz.wav')
 
-    amplitude, phase, db_fft, freqz = extracts_parameters(audio_data, Fe)
-    create_figure(freqz, phase, 'Phase Bruité', 'Freqs (Hz)', 'Phase (rad/éch)', 0, 1200)
-    create_figure(freqz, db_fft, 'Amplitude Bruité', 'Freqs (Hz)', 'Amplitude (DB)', 0, 1200)
+    # Création du filtre l-p pour l'enveloppe
+    low_filter = create_rif_filter(Fe)
 
+    # Extraction of parameters for the original sound of the basson
+    amplitude, phase, db_fft, freqz = extracts_parameters(audio_data, Fe)
+    create_figure(freqz, db_fft, 'Amplitude du basson bruité', 'Freqs (Hz)', 'Amplitude (DB)', 0, 1200)
+
+    # BandStop filter creation
     h_basson = create_bandstop_filter(Fe)
+
+    # Convolution between the original signal and the filter while applying a window and normalizing on 1 the signal
     y = np.convolve(audio_data, h_basson)
     y = y * np.hamming(len(y))
-    y = np.divide(y, np.amax(y))
+    y = normalize(y)
 
+    # Extraction of parameters for new sound of the basson
     amplitude, phase, db_fft, freqz = extracts_parameters(y, Fe)
-    create_figure(freqz, phase, 'Phase Filtré', 'Freqs (Hz)', 'Phase (rad/éch)', 0, 1200)
-    create_figure(freqz, db_fft, 'Amplitude Filtré', 'Freqs (Hz)', 'Amplitude (DB)', 0, 1200)
+    create_figure(freqz, db_fft, 'Amplitude Filtré Basson', 'Freqs (Hz)', 'Amplitude (DB)', 0, 1200)
 
+    # Harmonics for the filtered sound of the basson
     fundamental_frequency = find_fundamental_frequency(amplitude, Fe)
-    harmonics = return_harmonics(amplitude, phase, nb_harmonics, fundamental_frequency, Fe)
-    print_harmonics(harmonics)
+    amplitude_ham, phase_ham, freq_ham = return_harmonics(amplitude, phase, nb_harmonics, fundamental_frequency, Fe)
+    print_harmonics(amplitude_ham, phase_ham, freq_ham)
 
-    low_filter = create_rif_filter(Fe)
-    envelope = create_temporal_envelope(y, low_filter)
+    # Create figure for the harmonics
+    create_figure_harm(freq_ham, amplitude_ham, 'Amplitudes des harmoniques', 'Freqs (Hz)', 'Amplitude', np.amin(amplitude_ham), np.amax(amplitude_ham))
+    create_figure_harm(freq_ham, phase_ham, 'Phases des harmoniques', 'Freqs (Hz)', 'Phase', np.amin(phase_ham), np.amax(phase_ham))
 
-    audio = signal_to_audio(harmonics, harmonics[0][1], Fe, envelope, 2)
+    # Create envelope for the synthesized sound
+    envelope = create_temporal_envelope(y, low_filter, 'basson')
+
+    # Singal Audio
+    audio = signal_to_audio(amplitude_ham, phase_ham, fundamental_frequency, Fe, envelope, 3)
+
+    audio = np.convolve(audio, h_basson)
+    audio = audio * np.hamming(len(audio))
+    audio = normalize(audio)
+
     write_wav_file("Basson", audio, Fe)
+    plot_synth_singal(audio, Fe, "Basson", 1200)
 
 
 def convert_frequencies(note, lad_freq):
@@ -227,20 +283,21 @@ def convert_frequencies(note, lad_freq):
         case "si":
             return la_freq * 1.123
 
+
 def silence(fe, duration = 2.0):
     return np.zeros(int(duration * fe))
 
 
-def generate_betho(harmonics, fe, envelope, fundamental):
+def generate_betho(amplitude, phase, fe, envelope, fundamental):
     f_sol = convert_frequencies('sol', fundamental)
     f_mib = convert_frequencies('re#', fundamental)
     f_fa = convert_frequencies('fa', fundamental)
     f_re = convert_frequencies('re', fundamental)
 
-    sol = signal_to_audio(harmonics, f_sol, fe, envelope, 0.4)
-    mib = signal_to_audio(harmonics, f_mib, fe, envelope, 1.5)
-    fa = signal_to_audio(harmonics, f_fa, fe, envelope, 0.4)
-    re = signal_to_audio(harmonics, f_re, fe, envelope, 1.5)
+    sol = signal_to_audio(amplitude, phase, f_sol, fe, envelope, 0.4)
+    mib = signal_to_audio(amplitude, phase, f_mib, fe, envelope, 1.5)
+    fa = signal_to_audio(amplitude, phase, f_fa, fe, envelope, 0.4)
+    re = signal_to_audio(amplitude, phase, f_re, fe, envelope, 1.5)
 
     audio = np.concatenate((sol, sol, sol, mib, silence(fe, 1.5), fa, fa, fa, re))
     write_wav_file('Beethoven', audio, fe)
